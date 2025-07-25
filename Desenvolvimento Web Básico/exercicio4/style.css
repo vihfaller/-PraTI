@@ -1,0 +1,23 @@
+header {
+  background-color: #e0f7fa;
+  color: #006064;
+  padding: 20px;
+  margin: 20px;
+  border: 2px solid #006064;
+}
+
+main {
+  background-color: #fff3e0;
+  color: #e65100;
+  padding: 20px;
+  margin: 20px;
+  border: 2px solid #e65100;
+}
+
+footer {
+  background-color: #ede7f6;
+  color: #4527a0;
+  padding: 20px;
+  margin: 20px;
+  border: 2px solid #4527a0;
+}

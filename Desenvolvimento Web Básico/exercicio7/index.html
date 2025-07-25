@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Menu Responsivo</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <nav class="menu">
+    <button class="hamburger">&#9776;</button>
+    <ul class="menu-list">
+      <li><a href="#">Início</a></li>
+      <li><a href="#">Serviços</a></li>
+      <li><a href="#">Contato</a></li>
+    </ul>
+  </nav>
+
+  <script>
+    const botao = document.querySelector('.hamburger');
+    const menu = document.querySelector('.menu-list');
+
+    botao.addEventListener('click', () => {
+      menu.classList.toggle('ativo');
+    });
+  </script>
+
+</body>
+</html>
