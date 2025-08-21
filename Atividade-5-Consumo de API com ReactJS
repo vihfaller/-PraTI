@@ -1,0 +1,570 @@
+import React, { useEffect, useMemo, useState } from "react";
+import { BrowserRouter, Routes, Route, Link, useNavigate, useParams, useLocation } from "react-router-dom";
+import { Heart, HeartOff, Film, Search, Star, Loader2, ArrowLeft, ChevronLeft, ChevronRight } from "lucide-react";
+
+/**
+ * MovieFinder — App React em arquivo único
+ * Funcionalidades:
+ * - Página de busca com lista (pôster, título, ano, detalhes)
+ * - Paginação
+ * - Página de detalhes com diretor, elenco, sinopse, avaliação
+ * - Lista de favoritos com add/remover
+ * - Persistência em localStorage
+ * - Loading e tratamento de erros
+ *
+ * API: OMDb (https://www.omdbapi.com/)
+ * Como usar: Gere uma API Key gratuita e informe no topo do app. Ela será salva em localStorage.
+ */
+
+// -------------------- Helpers --------------------
+function classNames(...s) { return s.filter(Boolean).join(" "); }
+
+function useLocalStorage(key, initialValue) {
+  const [value, setValue] = useState(() => {
+    try {
+      const item = window.localStorage.getItem(key);
+      return item ? JSON.parse(item) : initialValue;
+    } catch {
+      return initialValue;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(key, JSON.stringify(value));
+    } catch {}
+  }, [key, value]);
+  return [value, setValue];
+}
+
+const OMDB_BASE = "https://www.omdbapi.com/";
+
+async function searchMovies({ apiKey, query, page }) {
+  const url = new URL(OMDB_BASE);
+  url.searchParams.set("apikey", apiKey);
+  url.searchParams.set("s", query);
+  url.searchParams.set("page", String(page ?? 1));
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error("Falha ao conectar ao servidor.");
+  const data = await res.json();
+  if (data.Response === "False") throw new Error(data.Error || "Erro na busca.");
+  // data.Search: array de { Title, Year, imdbID, Type, Poster }
+  // data.totalResults: string
+  return { results: data.Search, total: Number(data.totalResults || 0) };
+}
+
+async function getMovieDetails({ apiKey, imdbID }) {
+  const url = new URL(OMDB_BASE);
+  url.searchParams.set("apikey", apiKey);
+  url.searchParams.set("i", imdbID);
+  url.searchParams.set("plot", "full");
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error("Falha ao conectar ao servidor.");
+  const data = await res.json();
+  if (data.Response === "False") throw new Error(data.Error || "Não encontrado.");
+  return data; // objeto com Director, Actors, Plot, imdbRating, etc.
+}
+
+// -------------------- UI Básico --------------------
+function Container({ children }) {
+  return <div className="mx-auto max-w-6xl px-4 py-6">{children}</div>;
+}
+
+function Badge({ children }) {
+  return (
+    <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium">
+      {children}
+    </span>
+  );
+}
+
+function Button({ as: As = "button", className, children, ...props }) {
+  return (
+    <As
+      className={classNames(
+        "inline-flex items-center gap-2 rounded-2xl border px-4 py-2 text-sm font-medium shadow-sm transition hover:shadow",
+        "bg-white/50 backdrop-blur supports-[backdrop-filter]:bg-white/40",
+        className
+      )}
+      {...props}
+    >
+      {children}
+    </As>
+  );
+}
+
+function IconButton({ className, children, ...props }) {
+  return (
+    <button
+      className={classNames(
+        "inline-flex items-center justify-center rounded-xl border p-2 shadow-sm transition hover:shadow",
+        "bg-white/60",
+        className
+      )}
+      {...props}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Input({ className, ...props }) {
+  return (
+    <input
+      className={classNames(
+        "w-full rounded-2xl border px-4 py-2 text-sm shadow-sm outline-none transition",
+        "focus:ring-2 focus:ring-black/10",
+        className
+      )}
+      {...props}
+    />
+  );
+}
+
+function Card({ className, children }) {
+  return (
+    <div className={classNames(
+      "rounded-2xl border bg-white/70 p-4 shadow-sm backdrop-blur",
+      className
+    )}>
+      {children}
+    </div>
+  );
+}
+
+function Spinner({ label }) {
+  return (
+    <div className="flex items-center gap-2 text-sm opacity-80">
+      <Loader2 className="h-4 w-4 animate-spin" />
+      {label && <span>{label}</span>}
+    </div>
+  );
+}
+
+function Empty({ icon: Icon = Film, title, subtitle, children }) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-2 rounded-2xl border p-8 text-center opacity-80">
+      <Icon className="h-8 w-8" />
+      <h3 className="text-base font-semibold">{title}</h3>
+      {subtitle && <p className="text-sm">{subtitle}</p>}
+      {children}
+    </div>
+  );
+}
+
+// -------------------- Estado Global simples --------------------
+const FavoritesContext = React.createContext();
+function FavoritesProvider({ children }) {
+  const [favorites, setFavorites] = useLocalStorage("mfavorites", []);
+  const toggleFavorite = (movie) => {
+    setFavorites((prev) => {
+      const exists = prev.some((m) => m.imdbID === movie.imdbID);
+      if (exists) return prev.filter((m) => m.imdbID !== movie.imdbID);
+      // Guardar subset utilizado na lista
+      const compact = {
+        Title: movie.Title,
+        Year: movie.Year,
+        Poster: movie.Poster,
+        imdbID: movie.imdbID,
+        Type: movie.Type,
+      };
+      return [compact, ...prev];
+    });
+  };
+  const isFavorite = (id) => favorites.some((m) => m.imdbID === id);
+  const value = useMemo(() => ({ favorites, toggleFavorite, isFavorite }), [favorites]);
+  return <FavoritesContext.Provider value={value}>{children}</FavoritesContext.Provider>;
+}
+
+// -------------------- Header --------------------
+function Header({ apiKey, setApiKey }) {
+  const nav = useNavigate();
+  const [temp, setTemp] = useState(apiKey || "");
+  useEffect(() => setTemp(apiKey || ""), [apiKey]);
+
+  return (
+    <header className="sticky top-0 z-10 border-b bg-white/70 backdrop-blur">
+      <Container>
+        <div className="flex flex-wrap items-center gap-3 py-2">
+          <Link to="/" className="flex items-center gap-2 font-semibold">
+            <Film className="h-5 w-5" />
+            MovieFinder
+          </Link>
+          <nav className="ml-auto flex items-center gap-2">
+            <Button as={Link} to="/" className="hidden sm:inline-flex">Buscar</Button>
+            <Button as={Link} to="/favoritos">Favoritos</Button>
+          </nav>
+        </div>
+        <div className="grid gap-3 pb-3 sm:grid-cols-[1fr_auto]">
+          <div className="flex items-center gap-2">
+            <Input
+              placeholder="Cole sua OMDb API Key (salvamos localmente)"
+              value={temp}
+              onChange={(e) => setTemp(e.target.value)}
+            />
+            <Button onClick={() => setApiKey(temp)}>Salvar</Button>
+          </div>
+          <a
+            href="https://www.omdbapi.com/apikey.aspx"
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs opacity-70 underline sm:self-center"
+          >
+            Ainda não tem uma chave? Pegue grátis aqui.
+          </a>
+        </div>
+      </Container>
+    </header>
+  );
+}
+
+// -------------------- Busca --------------------
+function SearchPage({ apiKey }) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const params = new URLSearchParams(location.search);
+  const qParam = params.get("q") || "";
+  const pageParam = Number(params.get("page") || 1);
+
+  const [query, setQuery] = useLocalStorage("mquery", qParam);
+  const [page, setPage] = useState(pageParam);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [data, setData] = useState({ results: [], total: 0 });
+
+  useEffect(() => {
+    // Sincroniza barra de endereço
+    const next = new URLSearchParams();
+    if (query) next.set("q", query);
+    if (page > 1) next.set("page", String(page));
+    navigate({ pathname: "/", search: next.toString() }, { replace: true });
+  }, [query, page]);
+
+  useEffect(() => {
+    let cancel = false;
+    async function run() {
+      if (!apiKey || !query.trim()) { setData({ results: [], total: 0 }); return; }
+      setLoading(true); setError("");
+      try {
+        const res = await searchMovies({ apiKey, query, page });
+        if (!cancel) setData(res);
+      } catch (e) {
+        if (!cancel) setError(e.message || "Erro inesperado");
+      } finally {
+        if (!cancel) setLoading(false);
+      }
+    }
+    run();
+    return () => { cancel = true; };
+  }, [apiKey, query, page]);
+
+  const totalPages = Math.max(1, Math.ceil((data.total || 0) / 10));
+
+  return (
+    <Container>
+      <Card className="mb-4">
+        <form
+          onSubmit={(e) => { e.preventDefault(); setPage(1); /* busca acontece via efeito */ }}
+          className="flex items-center gap-2"
+        >
+          <Search className="h-5 w-5 opacity-60" />
+          <Input
+            placeholder="Busque por título (ex: Inception)"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <Button type="submit">Buscar</Button>
+        </form>
+        <div className="mt-3 flex items-center justify-between text-xs opacity-70">
+          <span>
+            {data.total > 0 ? `${data.total} resultado(s)` : query ? "Nenhum resultado" : ""}
+          </span>
+          {data.total > 0 && <span>Página {page} de {totalPages}</span>}
+        </div>
+      </Card>
+
+      {loading && <Spinner label="Carregando filmes..." />}
+      {error && (
+        <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          {error}
+        </div>
+      )}
+
+      {data.results?.length ? (
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+          {data.results.map((m) => (
+            <MovieCard key={m.imdbID} movie={m} />
+          ))}
+        </div>
+      ) : !loading && query ? (
+        <Empty title="Nada encontrado" subtitle="Tente refinar a busca." />
+      ) : (
+        <Empty title="Comece buscando um filme" subtitle="Digite um título acima." />
+      )}
+
+      {data.total > 10 && (
+        <Pagination
+          page={page}
+          totalPages={totalPages}
+          onChange={(p) => {
+            const clamped = Math.min(Math.max(1, p), totalPages);
+            setPage(clamped);
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          }}
+        />
+      )}
+    </Container>
+  );
+}
+
+function MovieCard({ movie }) {
+  const { toggleFavorite, isFavorite } = React.useContext(FavoritesContext);
+  const fav = isFavorite(movie.imdbID);
+  return (
+    <Card className="flex flex-col overflow-hidden p-0">
+      <Link to={`/filme/${movie.imdbID}`} className="block">
+        <img
+          src={movie.Poster !== "N/A" ? movie.Poster : `https://placehold.co/400x600?text=${encodeURIComponent(movie.Title)}`}
+          alt={movie.Title}
+          className="h-64 w-full object-cover"
+          loading="lazy"
+        />
+      </Link>
+      <div className="flex flex-1 flex-col gap-2 p-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <h3 className="truncate text-sm font-semibold" title={movie.Title}>{movie.Title}</h3>
+            <p className="text-xs opacity-70">{movie.Year} · {movie.Type}</p>
+          </div>
+          <IconButton
+            aria-label={fav ? "Remover dos favoritos" : "Adicionar aos favoritos"}
+            onClick={() => toggleFavorite(movie)}
+            title={fav ? "Remover dos favoritos" : "Adicionar aos favoritos"}
+          >
+            {fav ? <HeartOff className="h-4 w-4" /> : <Heart className="h-4 w-4" />}
+          </IconButton>
+        </div>
+        <div className="mt-auto flex items-center justify-between">
+          <Button as={Link} to={`/filme/${movie.imdbID}`} className="text-xs">Ver detalhes</Button>
+          <Badge>{movie.Year}</Badge>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function Pagination({ page, totalPages, onChange }) {
+  const pages = useMemo(() => {
+    const arr = [];
+    const start = Math.max(1, page - 2);
+    const end = Math.min(totalPages, page + 2);
+    for (let p = start; p <= end; p++) arr.push(p);
+    return arr;
+  }, [page, totalPages]);
+  return (
+    <div className="mt-6 flex items-center justify-center gap-2">
+      <IconButton onClick={() => onChange(page - 1)} disabled={page <= 1} title="Anterior">
+        <ChevronLeft className="h-4 w-4" />
+      </IconButton>
+      {pages.map((p) => (
+        <button
+          key={p}
+          onClick={() => onChange(p)}
+          className={classNames(
+            "min-w-[2.25rem] rounded-xl border px-3 py-1 text-sm",
+            p === page ? "bg-black text-white" : "bg-white"
+          )}
+        >
+          {p}
+        </button>
+      ))}
+      <IconButton onClick={() => onChange(page + 1)} disabled={page >= totalPages} title="Próxima">
+        <ChevronRight className="h-4 w-4" />
+      </IconButton>
+    </div>
+  );
+}
+
+// -------------------- Detalhes --------------------
+function DetailsPage({ apiKey }) {
+  const { imdbID } = useParams();
+  const navigate = useNavigate();
+  const { toggleFavorite, isFavorite } = React.useContext(FavoritesContext);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [movie, setMovie] = useState(null);
+
+  useEffect(() => {
+    let cancel = false;
+    async function run() {
+      setLoading(true); setError("");
+      try {
+        const data = await getMovieDetails({ apiKey, imdbID });
+        if (!cancel) setMovie(data);
+      } catch (e) {
+        if (!cancel) setError(e.message || "Erro ao carregar");
+      } finally {
+        if (!cancel) setLoading(false);
+      }
+    }
+    if (apiKey) run();
+    return () => { cancel = true; };
+  }, [apiKey, imdbID]);
+
+  const fav = movie && isFavorite(movie.imdbID);
+
+  return (
+    <Container>
+      <Button onClick={() => navigate(-1)} className="mb-4">
+        <ArrowLeft className="h-4 w-4" /> Voltar
+      </Button>
+
+      {!apiKey && (
+        <Empty title="Informe sua OMDb API Key" subtitle="Insira a chave no topo para carregar os detalhes." />
+      )}
+
+      {loading && <Spinner label="Carregando detalhes..." />}
+      {error && (
+        <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          {error}
+        </div>
+      )}
+
+      {!loading && movie && (
+        <div className="grid gap-6 md:grid-cols-[240px_1fr]">
+          <Card className="p-0">
+            <img
+              src={movie.Poster !== "N/A" ? movie.Poster : `https://placehold.co/600x900?text=${encodeURIComponent(movie.Title)}`}
+              alt={movie.Title}
+              className="h-full w-full rounded-2xl object-cover"
+            />
+          </Card>
+
+          <div className="space-y-3">
+            <h1 className="text-2xl font-bold">{movie.Title} <span className="opacity-60">({movie.Year})</span></h1>
+            <div className="flex flex-wrap items-center gap-2 text-sm opacity-80">
+              {movie.Rated && <Badge>{movie.Rated}</Badge>}
+              {movie.Runtime && <Badge>{movie.Runtime}</Badge>}
+              {movie.Genre && movie.Genre.split(", ").slice(0, 3).map((g) => (
+                <Badge key={g}>{g}</Badge>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-2 text-sm">
+              <Star className="h-4 w-4" />
+              <span className="font-medium">IMDb</span>
+              <span className="opacity-80">{movie.imdbRating}/10</span>
+              {movie.imdbVotes && <span className="opacity-60">({movie.imdbVotes} votos)</span>}
+            </div>
+
+            <p className="text-sm leading-relaxed opacity-90">{movie.Plot}</p>
+
+            <div className="grid gap-2 text-sm">
+              {movie.Director && <div><span className="font-medium">Diretor:</span> {movie.Director}</div>}
+              {movie.Writer && <div><span className="font-medium">Roteiro:</span> {movie.Writer}</div>}
+              {movie.Actors && <div><span className="font-medium">Elenco:</span> {movie.Actors}</div>}
+              {movie.Released && <div><span className="font-medium">Lançamento:</span> {movie.Released}</div>}
+              {movie.Language && <div><span className="font-medium">Idioma:</span> {movie.Language}</div>}
+              {movie.Country && <div><span className="font-medium">País:</span> {movie.Country}</div>}
+            </div>
+
+            <div className="pt-2">
+              <Button onClick={() => toggleFavorite(movie)}>
+                {fav ? <><HeartOff className="h-4 w-4" /> Remover dos favoritos</> : <><Heart className="h-4 w-4" /> Adicionar aos favoritos</>}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </Container>
+  );
+}
+
+// -------------------- Favoritos --------------------
+function FavoritesPage() {
+  const { favorites, toggleFavorite } = React.useContext(FavoritesContext);
+  return (
+    <Container>
+      <h1 className="mb-4 text-xl font-bold">Favoritos</h1>
+      {favorites.length === 0 ? (
+        <Empty title="Nenhum favorito ainda" subtitle="Adicione filmes pela página de busca.">
+          <Button as={Link} to="/" className="mt-2">Ir para busca</Button>
+        </Empty>
+      ) : (
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+          {favorites.map((m) => (
+            <Card key={m.imdbID} className="flex flex-col overflow-hidden p-0">
+              <Link to={`/filme/${m.imdbID}`} className="block">
+                <img
+                  src={m.Poster !== "N/A" ? m.Poster : `https://placehold.co/400x600?text=${encodeURIComponent(m.Title)}`}
+                  alt={m.Title}
+                  className="h-64 w-full object-cover"
+                />
+              </Link>
+              <div className="flex flex-1 flex-col gap-2 p-3">
+                <div className="min-w-0">
+                  <h3 className="truncate text-sm font-semibold" title={m.Title}>{m.Title}</h3>
+                  <p className="text-xs opacity-70">{m.Year} · {m.Type}</p>
+                </div>
+                <div className="mt-auto flex items-center justify-between">
+                  <Button as={Link} to={`/filme/${m.imdbID}`} className="text-xs">Ver detalhes</Button>
+                  <IconButton onClick={() => toggleFavorite(m)} title="Remover dos favoritos">
+                    <HeartOff className="h-4 w-4" />
+                  </IconButton>
+                </div>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </Container>
+  );
+}
+
+// -------------------- App --------------------
+export default function App() {
+  const [apiKey, setApiKey] = useLocalStorage("mokey", "");
+
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-white to-slate-50 text-slate-900">
+      <BrowserRouter>
+        <FavoritesProvider>
+          <Header apiKey={apiKey} setApiKey={setApiKey} />
+          <main>
+            <Routes>
+              <Route path="/" element={<SearchPage apiKey={apiKey} />} />
+              <Route path="/filme/:imdbID" element={<DetailsPage apiKey={apiKey} />} />
+              <Route path="/favoritos" element={<FavoritesPage />} />
+              <Route path="*" element={<NotFound />} />
+            </Routes>
+          </main>
+          <Footer />
+        </FavoritesProvider>
+      </BrowserRouter>
+    </div>
+  );
+}
+
+function NotFound() {
+  return (
+    <Container>
+      <Empty title="Página não encontrada">
+        <Button as={Link} to="/">Voltar ao início</Button>
+      </Empty>
+    </Container>
+  );
+}
+
+function Footer() {
+  return (
+    <footer className="mt-12 border-t bg-white/50">
+      <Container>
+        <div className="flex flex-col items-center justify-between gap-3 py-6 text-xs opacity-70 sm:flex-row">
+          <p>Feito com ❤ em React + OMDb</p>
+          <p>
+            Dica: você também pode usar a API do TMDB alterando as funções de fetch.
+          </p>
+        </div>
+      </Container>
+    </footer>
+  );
+}
